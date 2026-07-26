@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#ece9e4">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="路線図">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>首都圏路線図</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", sans-serif;
+  }
+
+  #map {
+    height: 100%;
+    width: 100%;
+    background: #ece9e4;
+  }
+
+  /* ベースタイルを退色させて路線を主役にする */
+  .leaflet-tile-pane {
+    filter: saturate(0.25) brightness(1.06);
+  }
+
+  /* 駅マーカー: 白丸 + 濃いグレーの枠 */
+  .station-dot {
+    background: #ffffff;
+    border: 2px solid #4a4a4a;
+    border-radius: 50%;
+    box-sizing: border-box;
+  }
+
+  .station-dot.major {
+    border-width: 3px;
+    border-color: #222222;
+  }
+
+  /* 駅名ラベル: EkiLupe の白い角丸ボックス */
+  .station-label {
+    background: #ffffff;
+    border: 1px solid #9a9a9a;
+    border-radius: 5px;
+    padding: 1px 6px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #1a1a1a;
+    white-space: nowrap;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
+    /* ラベル自体はクリックを吸わない */
+    pointer-events: none;
+  }
+
+  .station-label.major {
+    font-weight: 600;
+    font-size: 13px;
+    border-color: #5a5a5a;
+  }
+
+  /* Leaflet の divIcon が付ける既定の白背景を消す */
+  .leaflet-div-icon {
+    background: transparent;
+    border: none;
+  }
+
+  #status {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 1000;
+    background: rgba(255, 255, 255, 0.95);
+    border: 1px solid #c9c9c9;
+    border-radius: 8px;
+    padding: 14px 20px;
+    font-size: 14px;
+    color: #333;
+  }
+
+  #status.hidden { display: none; }
+
+  .leaflet-control-attribution {
+    font-size: 10px;
+  }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+<div id="status">路線データを読み込み中…</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ---- 設定 ----------------------------------------------------------------
+
+// ズームごとのラベル表示ルール。
+//   minZoom: このズーム以上でラベルを出し始める
+//   minRoutes: 表示に必要な最低乗換数(小さいほど多くの駅が出る)
+// 上から順に評価し、現在のズームが minZoom 以上の最初の行を採用する。
+// これより浅いズームではラベルを一切出さず、駅の点だけになる。
+var LABEL_TIERS = [
+  { minZoom: 15, minRoutes: 1 },   // かなり寄ると全駅
+  { minZoom: 14, minRoutes: 1 },
+  { minZoom: 13, minRoutes: 2 },
+  { minZoom: 12, minRoutes: 3 },
+  { minZoom: 11, minRoutes: 4 }    // これ未満のズームはラベルなし
+];
+var LABEL_MIN_ZOOM = 11;           // これ未満は点だけ
+
+// ラベル衝突判定の矩形パディング(px)。大きくすると間引きが強くなる。
+var COLLISION_PAD = 2;
+
+// 現在のズームに対応する最低乗換数を返す。null ならラベルを出さない。
+function currentMinRoutes() {
+  var z = map.getZoom();
+  if (z < LABEL_MIN_ZOOM) return null;
+  for (var i = 0; i < LABEL_TIERS.length; i++) {
+    if (z >= LABEL_TIERS[i].minZoom) return LABEL_TIERS[i].minRoutes;
+  }
+  return null;
+}
+
+var map = L.map('map', {
+  center: [35.68, 139.70],   // 東京駅付近
+  zoom: 11,
+  zoomControl: true,
+  preferCanvas: true          // 路線が数千本あるので Canvas 描画にする
+});
+
+L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+  attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+  subdomains: 'abcd',
+  maxZoom: 19
+}).addTo(map);
+
+// ---- データ読み込み --------------------------------------------------------
+
+Promise.all([
+  fetch('lines.geojson').then(function (r) { return r.json(); }),
+  fetch('stations.geojson').then(function (r) { return r.json(); })
+]).then(function (results) {
+  drawLines(results[0]);
+  drawStations(results[1]);
+  document.getElementById('status').classList.add('hidden');
+}).catch(function (err) {
+  document.getElementById('status').textContent =
+    'データを読み込めません。fetch_rail.py を実行して lines.geojson と stations.geojson を同じフォルダに置いてください。';
+  console.error(err);
+});
+
+// ---- 路線 ------------------------------------------------------------------
+
+function drawLines(geojson) {
+  L.geoJSON(geojson, {
+    style: function (feature) {
+      return {
+        color: feature.properties.colour || '#888888',
+        weight: 3.5,
+        opacity: 0.9,
+        lineJoin: 'round',
+        lineCap: 'round'
+      };
+    },
+    interactive: false
+  }).addTo(map);
+}
+
+// ---- 駅 --------------------------------------------------------------------
+
+var labelLayer = L.layerGroup().addTo(map);
+var stationData = [];
+
+function drawStations(geojson) {
+  stationData = geojson.features;
+
+  // 駅の点。浅いズームでは主要駅だけ、寄ると全駅を出す。
+  var dotLayer = L.layerGroup().addTo(map);
+
+  function renderDots() {
+    dotLayer.clearLayers();
+    var z = map.getZoom();
+    // ズーム10未満では乗換4以上の主要駅だけ点を出す(密集回避)
+    var minRoutesForDot = z < 10 ? 4 : (z < 12 ? 2 : 1);
+    var bounds = map.getBounds();
+
+    geojson.features.forEach(function (f) {
+      var routeCount = (f.properties.routes || []).length;
+      if (routeCount < minRoutesForDot) return;
+
+      var lat = f.geometry.coordinates[1];
+      var lng = f.geometry.coordinates[0];
+      if (!bounds.contains([lat, lng])) return;
+
+      var isMajor = routeCount >= 4;
+      var size = isMajor ? 11 : 8;
+
+      L.marker([lat, lng], {
+        icon: L.divIcon({
+          className: '',
+          html: '<div class="station-dot' + (isMajor ? ' major' : '') +
+                '" style="width:' + size + 'px;height:' + size + 'px"></div>',
+          iconSize: [size, size],
+          iconAnchor: [size / 2, size / 2]
+        }),
+        interactive: false,
+        keyboard: false
+      }).addTo(dotLayer);
+    });
+  }
+
+  renderDots();
+  var dotTimer = null;
+  map.on('moveend zoomend', function () {
+    if (dotTimer) clearTimeout(dotTimer);
+    dotTimer = setTimeout(renderDots, 120);
+  });
+
+  renderLabels();
+
+  // moveend / zoomend は連続で飛んでくるので少し待ってからまとめて処理する
+  var labelTimer = null;
+  map.on('moveend zoomend', function () {
+    if (labelTimer) clearTimeout(labelTimer);
+    labelTimer = setTimeout(renderLabels, 120);
+  });
+}
+
+// 表示範囲内の駅について、衝突しないものだけラベルを描く。
+// 乗換数の多い駅から順に配置するので、競合したら主要駅が勝つ。
+function renderLabels() {
+  labelLayer.clearLayers();
+
+  // 浅いズームではラベルを描かず、駅の点だけにする(軽い)
+  var minRoutes = currentMinRoutes();
+  if (minRoutes === null) return;
+
+  var bounds = map.getBounds();
+  var placed = [];   // 配置済みラベルの画面上矩形
+
+  for (var i = 0; i < stationData.length; i++) {
+    var f = stationData[i];
+    var lng = f.geometry.coordinates[0];
+    var lat = f.geometry.coordinates[1];
+
+    if (!bounds.contains([lat, lng])) continue;
+
+    var routeCount = (f.properties.routes || []).length;
+    if (routeCount < minRoutes) continue;
+
+    var name = f.properties.name;
+    var isMajor = routeCount >= 4;
+
+    // 文字数からラベル幅を概算する。全角前提。
+    var charW = isMajor ? 13 : 12;
+    var w = name.length * charW + 14;
+    var h = isMajor ? 22 : 20;
+
+    var pt = map.latLngToContainerPoint([lat, lng]);
+
+    // 駅の点の真上に置く
+    var rect = {
+      left: pt.x - w / 2,
+      top: pt.y - h - 8,
+      right: pt.x + w / 2,
+      bottom: pt.y - 8
+    };
+
+    if (collides(rect, placed)) continue;
+    placed.push(rect);
+
+    L.marker([lat, lng], {
+      icon: L.divIcon({
+        className: '',
+        html: '<div class="station-label' + (isMajor ? ' major' : '') + '">' +
+              escapeHtml(name) + '</div>',
+        iconSize: [w, h],
+        iconAnchor: [w / 2, h + 8]
+      }),
+      interactive: false,
+      keyboard: false
+    }).addTo(labelLayer);
+  }
+}
+
+function collides(rect, placed) {
+  for (var i = 0; i < placed.length; i++) {
+    var p = placed[i];
+    if (rect.left - COLLISION_PAD < p.right &&
+        rect.right + COLLISION_PAD > p.left &&
+        rect.top - COLLISION_PAD < p.bottom &&
+        rect.bottom + COLLISION_PAD > p.top) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;',
+             '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
+// PWA: service worker を登録(https か localhost でのみ動く)
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('sw.js').catch(function (e) {
+      console.warn('SW 登録失敗:', e);
+    });
+  });
+}
+</script>
+
+</body>
+</html>
