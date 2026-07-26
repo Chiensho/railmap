@@ -1,0 +1,14 @@
+{
+  "name": "首都圏路線図",
+  "short_name": "路線図",
+  "description": "首都圏の鉄道路線と駅(MapLibre版)",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#ece9e4",
+  "theme_color": "#ece9e4",
+  "icons": [
+    { "src": "./icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

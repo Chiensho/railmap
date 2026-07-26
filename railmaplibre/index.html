@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#ece9e4">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="路線図">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>首都圏路線図</title>
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", sans-serif;
+  }
+
+  #map {
+    position: absolute;
+    inset: 0;
+    background: #ece9e4;
+  }
+
+  /* 駅名ラベルは MapLibre の symbol レイヤで描くので、
+     背景の白ボックスは text-halo と別レイヤの矩形で表現する。
+     ここでは読み込み状態の表示だけ CSS で用意する。 */
+  #status {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 10;
+    background: rgba(255, 255, 255, 0.95);
+    border: 1px solid #c9c9c9;
+    border-radius: 8px;
+    padding: 14px 20px;
+    font-size: 14px;
+    color: #333;
+  }
+
+  #status.hidden { display: none; }
+
+  .maplibregl-ctrl-attrib {
+    font-size: 10px;
+  }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+<div id="status">路線データを読み込み中…</div>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script>
+// ---------------------------------------------------------------------------
+// 背景地図: OpenFreeMap の positron スタイル(APIキー不要のベクタータイル)。
+// これを土台に、路線と駅を GeoJSON ソースとして上に重ねる。
+// ---------------------------------------------------------------------------
+
+var map = new maplibregl.Map({
+  container: 'map',
+  style: 'https://tiles.openfreemap.org/styles/positron',
+  center: [139.70, 35.68],   // [lng, lat] 東京駅付近
+  zoom: 10.5,
+  minZoom: 8,
+  maxZoom: 18,
+  attributionControl: true
+});
+
+map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+map.addControl(new maplibregl.GeolocateControl({
+  positionOptions: { enableHighAccuracy: true },
+  trackUserLocation: true
+}), 'top-right');
+
+// ---------------------------------------------------------------------------
+// データ読み込みとレイヤ追加
+// ---------------------------------------------------------------------------
+
+map.on('load', function () {
+  Promise.all([
+    fetch('lines.geojson').then(function (r) { return r.json(); }),
+    fetch('stations.geojson').then(function (r) { return r.json(); })
+  ]).then(function (results) {
+    var lines = results[0];
+    var stations = results[1];
+
+    // 駅ごとに乗換数を数値プロパティとして持たせる(表示制御・優先度に使う)
+    stations.features.forEach(function (f) {
+      var routes = f.properties.routes || [];
+      f.properties.route_count = Array.isArray(routes)
+        ? routes.length
+        : String(routes).split(',').filter(Boolean).length;
+    });
+
+    addLines(lines);
+    addStations(stations);
+
+    document.getElementById('status').classList.add('hidden');
+  }).catch(function (err) {
+    document.getElementById('status').textContent =
+      'データを読み込めません。lines.geojson と stations.geojson を同じフォルダに置いてください。';
+    console.error(err);
+  });
+});
+
+// ---- 路線 ------------------------------------------------------------------
+
+function addLines(geojson) {
+  map.addSource('lines', { type: 'geojson', data: geojson });
+
+  // 路線本体。色は各 feature の colour プロパティを使う。
+  map.addLayer({
+    id: 'lines',
+    type: 'line',
+    source: 'lines',
+    layout: {
+      'line-join': 'round',
+      'line-cap': 'round'
+    },
+    paint: {
+      // ズームに応じて線を太くする(寄るほど太い)
+      'line-width': [
+        'interpolate', ['linear'], ['zoom'],
+        8, 1.5,
+        12, 3,
+        16, 6
+      ],
+      'line-color': ['coalesce', ['get', 'colour'], '#888888'],
+      'line-opacity': 0.9
+    }
+  });
+}
+
+// ---- 駅 --------------------------------------------------------------------
+
+function addStations(geojson) {
+  map.addSource('stations', { type: 'geojson', data: geojson });
+
+  // 駅の点(白丸 + 枠)。円は GPU で描かれるので大量でも軽い。
+  map.addLayer({
+    id: 'station-dots',
+    type: 'circle',
+    source: 'stations',
+    paint: {
+      'circle-radius': [
+        'interpolate', ['linear'], ['zoom'],
+        9, ['case', ['>=', ['get', 'route_count'], 4], 4, 2],
+        14, ['case', ['>=', ['get', 'route_count'], 4], 7, 5]
+      ],
+      'circle-color': '#ffffff',
+      'circle-stroke-color': [
+        'case', ['>=', ['get', 'route_count'], 4], '#222222', '#4a4a4a'
+      ],
+      'circle-stroke-width': [
+        'case', ['>=', ['get', 'route_count'], 4], 2, 1.5
+      ],
+      // ズームアウト時は乗換の少ない駅の点を薄く/消す
+      'circle-opacity': [
+        'step', ['zoom'],
+        ['case', ['>=', ['get', 'route_count'], 4], 1, 0],  // z<10: 主要駅のみ
+        10, ['case', ['>=', ['get', 'route_count'], 2], 1, 0],
+        12, 1
+      ],
+      'circle-stroke-opacity': [
+        'step', ['zoom'],
+        ['case', ['>=', ['get', 'route_count'], 4], 1, 0],
+        10, ['case', ['>=', ['get', 'route_count'], 2], 1, 0],
+        12, 1
+      ]
+    }
+  });
+
+  // 駅名ラベル。symbol レイヤは MapLibre が自動で衝突回避してくれる。
+  // 白ハローで EkiLupe 風の白背景に近い可読性を出す。
+  map.addLayer({
+    id: 'station-labels',
+    type: 'symbol',
+    source: 'stations',
+    layout: {
+      'text-field': ['get', 'name'],
+      'text-font': ['Noto Sans Regular'],
+      'text-size': [
+        'interpolate', ['linear'], ['zoom'],
+        11, 11,
+        15, 14
+      ],
+      'text-offset': [0, -1.1],
+      'text-anchor': 'bottom',
+      'text-allow-overlap': false,
+      'text-optional': true,
+      // 乗換の多い駅を優先表示(数値が小さいほど優先)
+      'symbol-sort-key': ['-', 0, ['get', 'route_count']]
+    },
+    paint: {
+      'text-color': '#1a1a1a',
+      'text-halo-color': '#ffffff',
+      'text-halo-width': 2,
+      'text-halo-blur': 0.5,
+      // ズームごとに表示する駅を乗換数で絞る
+      'text-opacity': [
+        'step', ['zoom'],
+        0,                                                        // z<11: なし
+        11, ['case', ['>=', ['get', 'route_count'], 4], 1, 0],
+        12, ['case', ['>=', ['get', 'route_count'], 3], 1, 0],
+        13, ['case', ['>=', ['get', 'route_count'], 2], 1, 0],
+        14, 1
+      ]
+    }
+  });
+
+  // 駅タップで路線情報をポップアップ表示
+  map.on('click', 'station-dots', function (e) {
+    var f = e.features[0];
+    var routes = f.properties.routes;
+    if (Array.isArray(routes)) routes = routes.join('、');
+    new maplibregl.Popup({ closeButton: true, offset: 8 })
+      .setLngLat(e.lngLat)
+      .setHTML(
+        '<strong>' + escapeHtml(f.properties.name) + '</strong>' +
+        (routes ? '<br><span style="font-size:12px;color:#555">' +
+                  escapeHtml(String(routes)) + '</span>' : '')
+      )
+      .addTo(map);
+  });
+  map.on('mouseenter', 'station-dots', function () {
+    map.getCanvas().style.cursor = 'pointer';
+  });
+  map.on('mouseleave', 'station-dots', function () {
+    map.getCanvas().style.cursor = '';
+  });
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;',
+             '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
+// PWA
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('sw.js').catch(function (e) {
+      console.warn('SW 登録失敗:', e);
+    });
+  });
+}
+</script>
+
+</body>
+</html>
