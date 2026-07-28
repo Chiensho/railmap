@@ -47,12 +47,121 @@
   .maplibregl-ctrl-attrib {
     font-size: 10px;
   }
+
+  /* 操作パネル */
+  #panel {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 10;
+    background: rgba(255, 255, 255, 0.96);
+    border: 1px solid #cfcfcf;
+    border-radius: 10px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+    width: 220px;
+    max-height: calc(100% - 20px);
+    display: flex;
+    flex-direction: column;
+    font-size: 13px;
+    color: #1a1a1a;
+  }
+
+  #panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  #panel-head strong { font-size: 14px; }
+
+  #panel-body {
+    padding: 0 12px 12px;
+    overflow-y: auto;
+  }
+
+  #panel.collapsed #panel-body { display: none; }
+
+  .panel-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 0;
+  }
+
+  .panel-row label { cursor: pointer; }
+
+  .panel-section-title {
+    font-size: 11px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 10px 0 4px;
+  }
+
+  .line-filter-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 3px 0;
+  }
+
+  .line-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    flex: 0 0 auto;
+    border: 1px solid rgba(0,0,0,0.15);
+  }
+
+  .line-filter-row label {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+  }
+
+  .panel-btn {
+    background: #f0f0f0;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+    cursor: pointer;
+    color: #333;
+  }
+  .panel-btn:hover { background: #e6e6e6; }
+
+  .panel-btns { display: flex; gap: 6px; margin: 6px 0 2px; }
 </style>
 </head>
 <body>
 
 <div id="map"></div>
 <div id="status">路線データを読み込み中…</div>
+
+<div id="panel">
+  <div id="panel-head">
+    <strong>表示設定</strong>
+    <span id="panel-toggle">▾</span>
+  </div>
+  <div id="panel-body">
+    <div class="panel-row">
+      <input type="checkbox" id="toggle-boundary" checked>
+      <label for="toggle-boundary">東京都の境界を表示</label>
+    </div>
+
+    <div class="panel-section-title">路線の絞り込み</div>
+    <div class="panel-btns">
+      <button class="panel-btn" id="lines-all">全部</button>
+      <button class="panel-btn" id="lines-none">なし</button>
+    </div>
+    <div id="line-filters"></div>
+  </div>
+</div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script>
@@ -84,10 +193,13 @@ map.addControl(new maplibregl.GeolocateControl({
 map.on('load', function () {
   Promise.all([
     fetch('lines.geojson').then(function (r) { return r.json(); }),
-    fetch('stations.geojson').then(function (r) { return r.json(); })
+    fetch('stations.geojson').then(function (r) { return r.json(); }),
+    fetch('boundary.geojson').then(function (r) { return r.json(); })
+                             .catch(function () { return null; })
   ]).then(function (results) {
     var lines = results[0];
     var stations = results[1];
+    var boundary = results[2];
 
     // 駅ごとに乗換数を数値プロパティとして持たせる(表示制御・優先度に使う)
     stations.features.forEach(function (f) {
@@ -97,8 +209,11 @@ map.on('load', function () {
         : String(routes).split(',').filter(Boolean).length;
     });
 
+    if (boundary) addBoundary(boundary);
     addLines(lines);
     addStations(stations);
+    buildLineFilters(lines);
+    setupPanel();
 
     document.getElementById('status').classList.add('hidden');
   }).catch(function (err) {
@@ -107,6 +222,27 @@ map.on('load', function () {
     console.error(err);
   });
 });
+
+// ---- 東京都境界 ------------------------------------------------------------
+
+function addBoundary(geojson) {
+  map.addSource('boundary', { type: 'geojson', data: geojson });
+  map.addLayer({
+    id: 'boundary',
+    type: 'line',
+    source: 'boundary',
+    layout: { 'line-join': 'round', 'line-cap': 'round' },
+    paint: {
+      'line-color': '#e2554e',        // 落ち着いた赤で境界を強調
+      'line-width': [
+        'interpolate', ['linear'], ['zoom'],
+        8, 1.5, 12, 2.5, 16, 3.5
+      ],
+      'line-opacity': 0.7,
+      'line-dasharray': [3, 2]         // 破線にして路線と区別
+    }
+  });
+}
 
 // ---- 路線 ------------------------------------------------------------------
 
@@ -123,12 +259,12 @@ function addLines(geojson) {
       'line-cap': 'round'
     },
     paint: {
-      // ズームに応じて線を太くする(寄るほど太い)
+      // ズームに応じて線を太くする(寄るほど太い)。全体的に少し細め。
       'line-width': [
         'interpolate', ['linear'], ['zoom'],
-        8, 1.5,
-        12, 3,
-        16, 6
+        8, 1,
+        12, 2.2,
+        16, 4.5
       ],
       'line-color': ['coalesce', ['get', 'colour'], '#888888'],
       'line-opacity': 0.9
@@ -233,6 +369,163 @@ function addStations(geojson) {
   map.on('mouseleave', 'station-dots', function () {
     map.getCanvas().style.cursor = '';
   });
+}
+
+// ---- 操作パネル ------------------------------------------------------------
+
+function setupPanel() {
+  var panel = document.getElementById('panel');
+  var head = document.getElementById('panel-head');
+  var toggle = document.getElementById('panel-toggle');
+
+  head.addEventListener('click', function () {
+    panel.classList.toggle('collapsed');
+    toggle.textContent = panel.classList.contains('collapsed') ? '▸' : '▾';
+  });
+
+  // 東京都境界のオン/オフ
+  document.getElementById('toggle-boundary').addEventListener('change', function (e) {
+    if (map.getLayer('boundary')) {
+      map.setLayoutProperty('boundary', 'visibility',
+        e.target.checked ? 'visible' : 'none');
+    }
+  });
+
+  // 道路番号は常に非表示にする
+  setRoadNumbersVisible(false);
+}
+
+// ベースマップの道路番号(国道・高速の番号標識)レイヤを切り替える。
+// レイヤID だけでなく、テキストやアイコンが道路の ref(路線番号)を
+// 参照しているかを調べて判定する。positron の実際のレイヤ名に依存しない。
+var roadNumberLayerIds = null;
+function findRoadNumberLayers() {
+  if (roadNumberLayerIds) return roadNumberLayerIds;
+  roadNumberLayerIds = [];
+  var layers = map.getStyle().layers || [];
+
+  layers.forEach(function (layer) {
+    if (layer.type !== 'symbol') return;
+    var id = (layer.id || '').toLowerCase();
+    var layout = layer.layout || {};
+
+    // 式やレイヤ設定を文字列化して 'ref' や 'shield' を含むか調べる
+    var blob = JSON.stringify([
+      id,
+      layout['text-field'] || '',
+      layout['icon-image'] || '',
+      layer['source-layer'] || ''
+    ]).toLowerCase();
+
+    var looksLikeRoadNumber =
+      blob.indexOf('shield') !== -1 ||
+      blob.indexOf('"ref"') !== -1 ||
+      blob.indexOf('get","ref') !== -1 ||
+      blob.indexOf('junction') !== -1 ||
+      id.indexOf('highway-shield') !== -1 ||
+      id.indexOf('road_ref') !== -1;
+
+    if (looksLikeRoadNumber) roadNumberLayerIds.push(layer.id);
+  });
+
+  return roadNumberLayerIds;
+}
+
+function setRoadNumbersVisible(visible) {
+  findRoadNumberLayers().forEach(function (id) {
+    if (map.getLayer(id)) {
+      map.setLayoutProperty(id, 'visibility', visible ? 'visible' : 'none');
+    }
+  });
+}
+
+// ---- 路線フィルタ ----------------------------------------------------------
+
+var allLineNames = [];
+
+function buildLineFilters(geojson) {
+  // 路線名 -> 色 の一覧を作る(重複排除)
+  var seen = {};
+  geojson.features.forEach(function (f) {
+    var name = f.properties.name;
+    if (!name || seen[name]) return;
+    seen[name] = f.properties.colour || '#888888';
+  });
+  allLineNames = Object.keys(seen).sort();
+
+  var container = document.getElementById('line-filters');
+  allLineNames.forEach(function (name) {
+    var row = document.createElement('div');
+    row.className = 'line-filter-row';
+
+    var sw = document.createElement('span');
+    sw.className = 'line-swatch';
+    sw.style.background = seen[name];
+
+    var cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = true;
+    cb.dataset.line = name;
+    cb.addEventListener('change', applyLineFilter);
+
+    var lbl = document.createElement('label');
+    lbl.textContent = name;
+    lbl.title = name;
+    lbl.addEventListener('click', function () { cb.click(); });
+
+    row.appendChild(cb);
+    row.appendChild(sw);
+    row.appendChild(lbl);
+    container.appendChild(row);
+  });
+
+  document.getElementById('lines-all').addEventListener('click', function () {
+    setAllLines(true);
+  });
+  document.getElementById('lines-none').addEventListener('click', function () {
+    setAllLines(false);
+  });
+}
+
+function checkedLineNames() {
+  var names = [];
+  document.querySelectorAll('#line-filters input[type=checkbox]').forEach(
+    function (cb) { if (cb.checked) names.push(cb.dataset.line); }
+  );
+  return names;
+}
+
+function applyLineFilter() {
+  var names = checkedLineNames();
+
+  // 選択された路線名だけを通すフィルタ式
+  var lineExpr = ['in', ['get', 'name'], ['literal', names]];
+  map.setFilter('lines', lineExpr);
+
+  // 駅は「選択路線のいずれかを含む」ものだけ表示。
+  // routes は配列だが、GeoJSON プロパティ上は環境により文字列化されるため
+  // any/index-of の両対応で判定する。
+  var stationExpr = buildStationFilter(names);
+  map.setFilter('station-dots', stationExpr);
+  map.setFilter('station-labels', stationExpr);
+}
+
+function buildStationFilter(names) {
+  if (names.length === allLineNames.length) return null;  // 全選択なら無条件
+  if (names.length === 0) return ['==', ['literal', 1], ['literal', 0]]; // 常に偽
+
+  // routes 配列の要素が names のいずれかに一致するか
+  var ors = names.map(function (n) {
+    return ['in', n, ['to-string', ['get', 'routes']]];
+  });
+  return ['any'].concat(ors);
+}
+
+function setAllLines(checked) {
+  document.querySelectorAll('#line-filters input[type=checkbox]').forEach(
+    function (cb) { cb.checked = checked; }
+  );
+  applyLineFilter();
 }
 
 function escapeHtml(s) {
