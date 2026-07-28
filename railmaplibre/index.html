@@ -349,18 +349,57 @@ function addStations(geojson) {
     }
   });
 
-  // 駅タップで路線情報をポップアップ表示
+  // 駅タップで停車路線をポップアップ表示
   map.on('click', 'station-dots', function (e) {
     var f = e.features[0];
     var routes = f.properties.routes;
-    if (Array.isArray(routes)) routes = routes.join('、');
-    new maplibregl.Popup({ closeButton: true, offset: 8 })
+
+    // MapLibre は配列プロパティを JSON 文字列で返すことがあるので
+    // 文字列なら parse、ダメなら区切りで分解して配列に正規化する。
+    if (typeof routes === 'string') {
+      try {
+        routes = JSON.parse(routes);
+      } catch (err) {
+        routes = routes.replace(/[\[\]"]/g, '').split(/[,、]/);
+      }
+    }
+    if (!Array.isArray(routes)) routes = routes ? [routes] : [];
+
+    // 前後空白を除き、重複を除いて並べる
+    var seen = {};
+    routes = routes
+      .map(function (r) { return String(r).trim(); })
+      .filter(function (r) {
+        if (!r || seen[r]) return false;
+        seen[r] = true;
+        return true;
+      });
+
+    var listHtml = routes.length
+      ? '<ul style="margin:6px 0 0;padding:0;list-style:none;font-size:12px;' +
+        'color:#333;line-height:1.7">' +
+        routes.map(function (r) {
+          var c = lineColours[r] || '#888888';
+          return '<li style="display:flex;align-items:center;gap:6px">' +
+            '<span style="width:11px;height:11px;border-radius:3px;' +
+            'flex:0 0 auto;border:1px solid rgba(0,0,0,.15);' +
+            'background:' + c + '"></span>' +
+            '<span>' + escapeHtml(r) + '</span></li>';
+        }).join('') +
+        '</ul>'
+      : '<div style="font-size:12px;color:#888;margin-top:4px">' +
+        '路線情報なし</div>';
+
+    var html =
+      '<div style="font-weight:600;font-size:14px">' +
+      escapeHtml(f.properties.name) + '</div>' +
+      '<div style="font-size:11px;color:#888">' +
+      routes.length + ' 路線</div>' +
+      listHtml;
+
+    new maplibregl.Popup({ closeButton: true, offset: 10, maxWidth: '240px' })
       .setLngLat(e.lngLat)
-      .setHTML(
-        '<strong>' + escapeHtml(f.properties.name) + '</strong>' +
-        (routes ? '<br><span style="font-size:12px;color:#555">' +
-                  escapeHtml(String(routes)) + '</span>' : '')
-      )
+      .setHTML(html)
       .addTo(map);
   });
   map.on('mouseenter', 'station-dots', function () {
@@ -442,6 +481,7 @@ function setRoadNumbersVisible(visible) {
 // ---- 路線フィルタ ----------------------------------------------------------
 
 var allLineNames = [];
+var lineColours = {};   // 路線名 -> 色。ポップアップ等で参照する。
 
 function buildLineFilters(geojson) {
   // 路線名 -> 色 の一覧を作る(重複排除)
@@ -451,6 +491,7 @@ function buildLineFilters(geojson) {
     if (!name || seen[name]) return;
     seen[name] = f.properties.colour || '#888888';
   });
+  lineColours = seen;
   allLineNames = Object.keys(seen).sort();
 
   var container = document.getElementById('line-filters');
@@ -514,9 +555,10 @@ function buildStationFilter(names) {
   if (names.length === allLineNames.length) return null;  // 全選択なら無条件
   if (names.length === 0) return ['==', ['literal', 1], ['literal', 0]]; // 常に偽
 
-  // routes 配列の要素が names のいずれかに一致するか
+  // routes は正規化路線名の配列。選択路線のいずれかを
+  // 「配列の要素として」含むかを完全一致で判定する(部分一致しない)。
   var ors = names.map(function (n) {
-    return ['in', n, ['to-string', ['get', 'routes']]];
+    return ['in', n, ['get', 'routes']];
   });
   return ['any'].concat(ors);
 }
