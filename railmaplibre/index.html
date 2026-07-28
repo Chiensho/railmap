@@ -483,6 +483,28 @@ function setRoadNumbersVisible(visible) {
 var allLineNames = [];
 var lineColours = {};   // 路線名 -> 色。ポップアップ等で参照する。
 
+// 新幹線の列車名。これらは「新幹線」グループにまとめ、初期は非表示。
+var SHINKANSEN = {
+  'あさま': 1, 'かがやき': 1, 'こだま': 1, 'こまち': 1, 'たにがわ': 1,
+  'つばさ': 1, 'とき': 1, 'なすの': 1, 'のぞみ': 1, 'はくたか': 1,
+  'はやて': 1, 'はやぶさ': 1, 'やまびこ': 1, '東北新幹線': 1
+};
+
+// 在来線特急の列車名。既存路線に重なって描かれるため初期は非表示。
+var LIMITED_EXPRESS = {
+  'JR成田エクスプレス': 1, 'あずさ': 1, 'えのしま': 1, 'きぬがわ': 1,
+  'さがみ': 1, 'しおさい': 1, 'ちちぶ': 1, 'はこね': 1,
+  'スーパーはこね': 1, 'ふじさん': 1, '日光': 1, '踊り子': 1, 'ひたち': 1
+};
+
+// 有料ライナー・空港アクセス系統。初期は非表示。
+var LINER = {
+  'S-Train': 1, 'TJライナー': 1, '拝島ライナー': 1,
+  '京成スカイライナー': 1, '京成成田空港アクセス': 1,
+  '京成電鉄シテイライナー': 1,
+  'エアポート成田空港駅': 1, 'エアポート羽田空港第1・第2ターミナル駅': 1
+};
+
 function buildLineFilters(geojson) {
   // 路線名 -> 色 の一覧を作る(重複排除)
   var seen = {};
@@ -494,20 +516,34 @@ function buildLineFilters(geojson) {
   lineColours = seen;
   allLineNames = Object.keys(seen).sort();
 
-  var container = document.getElementById('line-filters');
+  // グループに振り分け
+  var shinkansen = [];
+  var limitedExpress = [];
+  var liner = [];
+  var regular = [];
   allLineNames.forEach(function (name) {
+    if (SHINKANSEN[name]) shinkansen.push(name);
+    else if (LIMITED_EXPRESS[name]) limitedExpress.push(name);
+    else if (LINER[name]) liner.push(name);
+    else regular.push(name);
+  });
+
+  var container = document.getElementById('line-filters');
+
+  // 1行分のフィルタ行を作る
+  function makeRow(name, checked) {
     var row = document.createElement('div');
     row.className = 'line-filter-row';
+
+    var cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = checked;
+    cb.dataset.line = name;
+    cb.addEventListener('change', applyLineFilter);
 
     var sw = document.createElement('span');
     sw.className = 'line-swatch';
     sw.style.background = seen[name];
-
-    var cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.checked = true;
-    cb.dataset.line = name;
-    cb.addEventListener('change', applyLineFilter);
 
     var lbl = document.createElement('label');
     lbl.textContent = name;
@@ -517,8 +553,45 @@ function buildLineFilters(geojson) {
     row.appendChild(cb);
     row.appendChild(sw);
     row.appendChild(lbl);
-    container.appendChild(row);
+    return row;
+  }
+
+  // 見出しを作る
+  function makeHeading(text) {
+    var h = document.createElement('div');
+    h.className = 'panel-section-title';
+    h.textContent = text;
+    return h;
+  }
+
+  // 在来線など(初期表示 on)
+  regular.forEach(function (name) {
+    container.appendChild(makeRow(name, true));
   });
+
+  // 在来線特急(初期表示 off)
+  if (limitedExpress.length) {
+    container.appendChild(makeHeading('在来線特急'));
+    limitedExpress.forEach(function (name) {
+      container.appendChild(makeRow(name, false));
+    });
+  }
+
+  // ライナー・空港アクセス(初期表示 off)
+  if (liner.length) {
+    container.appendChild(makeHeading('ライナー・空港アクセス'));
+    liner.forEach(function (name) {
+      container.appendChild(makeRow(name, false));
+    });
+  }
+
+  // 新幹線(初期表示 off)
+  if (shinkansen.length) {
+    container.appendChild(makeHeading('新幹線'));
+    shinkansen.forEach(function (name) {
+      container.appendChild(makeRow(name, false));
+    });
+  }
 
   document.getElementById('lines-all').addEventListener('click', function () {
     setAllLines(true);
@@ -526,6 +599,9 @@ function buildLineFilters(geojson) {
   document.getElementById('lines-none').addEventListener('click', function () {
     setAllLines(false);
   });
+
+  // 初期状態(新幹線 off)をmap に反映
+  applyLineFilter();
 }
 
 function checkedLineNames() {
@@ -563,9 +639,22 @@ function buildStationFilter(names) {
   return ['any'].concat(ors);
 }
 
+function isSpecialLine(name) {
+  return !!(SHINKANSEN[name] || LIMITED_EXPRESS[name] || LINER[name]);
+}
+
+// checked=true(全部): 通常路線だけを on にし、新幹線・特急・ライナーは
+//   off のままにする(初期状態と同じ)。
+// checked=false(なし): すべて off。
 function setAllLines(checked) {
   document.querySelectorAll('#line-filters input[type=checkbox]').forEach(
-    function (cb) { cb.checked = checked; }
+    function (cb) {
+      if (checked && isSpecialLine(cb.dataset.line)) {
+        cb.checked = false;   // 特殊グループは全部でも表示しない
+      } else {
+        cb.checked = checked;
+      }
+    }
   );
   applyLineFilter();
 }
