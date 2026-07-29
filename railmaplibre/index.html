@@ -191,6 +191,8 @@ map.addControl(new maplibregl.GeolocateControl({
 // ---------------------------------------------------------------------------
 
 map.on('load', function () {
+  fadeBaseMap();
+
   Promise.all([
     fetch('lines.geojson').then(function (r) { return r.json(); }),
     fetch('stations.geojson').then(function (r) { return r.json(); }),
@@ -222,6 +224,42 @@ map.on('load', function () {
     console.error(err);
   });
 });
+
+// ---- ベースマップの退色 ------------------------------------------------
+
+// positron スタイルの各レイヤーを薄くして、上に重ねる路線・駅を
+// 目立たせる。route/lines/stations 等、自分で追加するレイヤーは
+// まだこの時点で存在しないので対象外(自然に除外される)。
+var BASE_FADE = 0.45;   // 0〜1。小さいほど薄くなる
+
+function fadeBaseMap() {
+  var layers = map.getStyle().layers || [];
+  layers.forEach(function (layer) {
+    var id = layer.id;
+    try {
+      if (layer.type === 'fill') {
+        setOpacityIfExists(id, 'fill-opacity', BASE_FADE);
+      } else if (layer.type === 'line') {
+        setOpacityIfExists(id, 'line-opacity', BASE_FADE);
+      } else if (layer.type === 'symbol') {
+        setOpacityIfExists(id, 'icon-opacity', BASE_FADE);
+        setOpacityIfExists(id, 'text-opacity', BASE_FADE);
+      } else if (layer.type === 'fill-extrusion') {
+        setOpacityIfExists(id, 'fill-extrusion-opacity', BASE_FADE);
+      } else if (layer.type === 'background') {
+        setOpacityIfExists(id, 'background-opacity', BASE_FADE);
+      }
+    } catch (e) {
+      // 一部レイヤーで prop が無い場合は無視
+    }
+  });
+}
+
+function setOpacityIfExists(layerId, prop, value) {
+  // 既存の値(式の可能性あり)を尊重せず、単純に固定値へ差し替える。
+  // positron は基本単色で式を使っていないことが多いためこれで十分。
+  map.setPaintProperty(layerId, prop, value);
+}
 
 // ---- 東京都境界 ------------------------------------------------------------
 
