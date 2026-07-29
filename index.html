@@ -10,7 +10,7 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>首都圏路線図</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
 <style>
   html, body {
     margin: 0;
@@ -20,62 +20,20 @@
   }
 
   #map {
-    height: 100%;
-    width: 100%;
+    position: absolute;
+    inset: 0;
     background: #ece9e4;
   }
 
-  /* ベースタイルを退色させて路線を主役にする */
-  .leaflet-tile-pane {
-    filter: saturate(0.25) brightness(1.06);
-  }
-
-  /* 駅マーカー: 白丸 + 濃いグレーの枠 */
-  .station-dot {
-    background: #ffffff;
-    border: 2px solid #4a4a4a;
-    border-radius: 50%;
-    box-sizing: border-box;
-  }
-
-  .station-dot.major {
-    border-width: 3px;
-    border-color: #222222;
-  }
-
-  /* 駅名ラベル: EkiLupe の白い角丸ボックス */
-  .station-label {
-    background: #ffffff;
-    border: 1px solid #9a9a9a;
-    border-radius: 5px;
-    padding: 1px 6px;
-    font-size: 12px;
-    line-height: 1.5;
-    color: #1a1a1a;
-    white-space: nowrap;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
-    /* ラベル自体はクリックを吸わない */
-    pointer-events: none;
-  }
-
-  .station-label.major {
-    font-weight: 600;
-    font-size: 13px;
-    border-color: #5a5a5a;
-  }
-
-  /* Leaflet の divIcon が付ける既定の白背景を消す */
-  .leaflet-div-icon {
-    background: transparent;
-    border: none;
-  }
-
+  /* 駅名ラベルは MapLibre の symbol レイヤで描くので、
+     背景の白ボックスは text-halo と別レイヤの矩形で表現する。
+     ここでは読み込み状態の表示だけ CSS で用意する。 */
   #status {
     position: absolute;
     left: 50%;
     top: 50%;
     transform: translate(-50%, -50%);
-    z-index: 1000;
+    z-index: 10;
     background: rgba(255, 255, 255, 0.95);
     border: 1px solid #c9c9c9;
     border-radius: 8px;
@@ -86,9 +44,98 @@
 
   #status.hidden { display: none; }
 
-  .leaflet-control-attribution {
+  .maplibregl-ctrl-attrib {
     font-size: 10px;
   }
+
+  /* 操作パネル */
+  #panel {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 10;
+    background: rgba(255, 255, 255, 0.96);
+    border: 1px solid #cfcfcf;
+    border-radius: 10px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+    width: 220px;
+    max-height: calc(100% - 20px);
+    display: flex;
+    flex-direction: column;
+    font-size: 13px;
+    color: #1a1a1a;
+  }
+
+  #panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  #panel-head strong { font-size: 14px; }
+
+  #panel-body {
+    padding: 0 12px 12px;
+    overflow-y: auto;
+  }
+
+  #panel.collapsed #panel-body { display: none; }
+
+  .panel-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 0;
+  }
+
+  .panel-row label { cursor: pointer; }
+
+  .panel-section-title {
+    font-size: 11px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 10px 0 4px;
+  }
+
+  .line-filter-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 3px 0;
+  }
+
+  .line-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    flex: 0 0 auto;
+    border: 1px solid rgba(0,0,0,0.15);
+  }
+
+  .line-filter-row label {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+  }
+
+  .panel-btn {
+    background: #f0f0f0;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+    cursor: pointer;
+    color: #333;
+  }
+  .panel-btn:hover { background: #e6e6e6; }
+
+  .panel-btns { display: flex; gap: 6px; margin: 6px 0 2px; }
 </style>
 </head>
 <body>
@@ -96,220 +143,568 @@
 <div id="map"></div>
 <div id="status">路線データを読み込み中…</div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<div id="panel">
+  <div id="panel-head">
+    <strong>表示設定</strong>
+    <span id="panel-toggle">▾</span>
+  </div>
+  <div id="panel-body">
+    <div class="panel-row">
+      <input type="checkbox" id="toggle-boundary" checked>
+      <label for="toggle-boundary">東京都の境界を表示</label>
+    </div>
+
+    <div class="panel-section-title">路線の絞り込み</div>
+    <div class="panel-btns">
+      <button class="panel-btn" id="lines-all">全部</button>
+      <button class="panel-btn" id="lines-none">なし</button>
+    </div>
+    <div id="line-filters"></div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script>
-// ---- 設定 ----------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 背景地図: OpenFreeMap の positron スタイル(APIキー不要のベクタータイル)。
+// これを土台に、路線と駅を GeoJSON ソースとして上に重ねる。
+// ---------------------------------------------------------------------------
 
-// ズームごとのラベル表示ルール。
-//   minZoom: このズーム以上でラベルを出し始める
-//   minRoutes: 表示に必要な最低乗換数(小さいほど多くの駅が出る)
-// 上から順に評価し、現在のズームが minZoom 以上の最初の行を採用する。
-// これより浅いズームではラベルを一切出さず、駅の点だけになる。
-var LABEL_TIERS = [
-  { minZoom: 15, minRoutes: 1 },   // かなり寄ると全駅
-  { minZoom: 14, minRoutes: 1 },
-  { minZoom: 13, minRoutes: 2 },
-  { minZoom: 12, minRoutes: 3 },
-  { minZoom: 11, minRoutes: 4 }    // これ未満のズームはラベルなし
-];
-var LABEL_MIN_ZOOM = 11;           // これ未満は点だけ
+var map = new maplibregl.Map({
+  container: 'map',
+  style: 'https://tiles.openfreemap.org/styles/positron',
+  center: [139.70, 35.68],   // [lng, lat] 東京駅付近
+  zoom: 10.5,
+  minZoom: 8,
+  maxZoom: 18,
+  attributionControl: true
+});
 
-// ラベル衝突判定の矩形パディング(px)。大きくすると間引きが強くなる。
-var COLLISION_PAD = 2;
+map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+map.addControl(new maplibregl.GeolocateControl({
+  positionOptions: { enableHighAccuracy: true },
+  trackUserLocation: true
+}), 'top-right');
 
-// 現在のズームに対応する最低乗換数を返す。null ならラベルを出さない。
-function currentMinRoutes() {
-  var z = map.getZoom();
-  if (z < LABEL_MIN_ZOOM) return null;
-  for (var i = 0; i < LABEL_TIERS.length; i++) {
-    if (z >= LABEL_TIERS[i].minZoom) return LABEL_TIERS[i].minRoutes;
-  }
-  return null;
+// ---------------------------------------------------------------------------
+// データ読み込みとレイヤ追加
+// ---------------------------------------------------------------------------
+
+map.on('load', function () {
+  fadeBaseMap();
+
+  Promise.all([
+    fetch('lines.geojson').then(function (r) { return r.json(); }),
+    fetch('stations.geojson').then(function (r) { return r.json(); }),
+    fetch('boundary.geojson').then(function (r) { return r.json(); })
+                             .catch(function () { return null; })
+  ]).then(function (results) {
+    var lines = results[0];
+    var stations = results[1];
+    var boundary = results[2];
+
+    // 駅ごとに乗換数を数値プロパティとして持たせる(表示制御・優先度に使う)
+    stations.features.forEach(function (f) {
+      var routes = f.properties.routes || [];
+      f.properties.route_count = Array.isArray(routes)
+        ? routes.length
+        : String(routes).split(',').filter(Boolean).length;
+    });
+
+    if (boundary) addBoundary(boundary);
+    addLines(lines);
+    addStations(stations);
+    buildLineFilters(lines);
+    setupPanel();
+
+    document.getElementById('status').classList.add('hidden');
+  }).catch(function (err) {
+    document.getElementById('status').textContent =
+      'データを読み込めません。lines.geojson と stations.geojson を同じフォルダに置いてください。';
+    console.error(err);
+  });
+});
+
+// ---- ベースマップの退色 ------------------------------------------------
+
+// positron スタイルの各レイヤーを薄くして、上に重ねる路線・駅を
+// 目立たせる。route/lines/stations 等、自分で追加するレイヤーは
+// まだこの時点で存在しないので対象外(自然に除外される)。
+var BASE_FADE = 0.45;   // 0〜1。小さいほど薄くなる
+
+function fadeBaseMap() {
+  var layers = map.getStyle().layers || [];
+  layers.forEach(function (layer) {
+    var id = layer.id;
+    try {
+      if (layer.type === 'fill') {
+        setOpacityIfExists(id, 'fill-opacity', BASE_FADE);
+      } else if (layer.type === 'line') {
+        setOpacityIfExists(id, 'line-opacity', BASE_FADE);
+      } else if (layer.type === 'symbol') {
+        setOpacityIfExists(id, 'icon-opacity', BASE_FADE);
+        setOpacityIfExists(id, 'text-opacity', BASE_FADE);
+      } else if (layer.type === 'fill-extrusion') {
+        setOpacityIfExists(id, 'fill-extrusion-opacity', BASE_FADE);
+      } else if (layer.type === 'background') {
+        setOpacityIfExists(id, 'background-opacity', BASE_FADE);
+      }
+    } catch (e) {
+      // 一部レイヤーで prop が無い場合は無視
+    }
+  });
 }
 
-var map = L.map('map', {
-  center: [35.68, 139.70],   // 東京駅付近
-  zoom: 11,
-  zoomControl: true,
-  preferCanvas: true          // 路線が数千本あるので Canvas 描画にする
-});
+function setOpacityIfExists(layerId, prop, value) {
+  // 既存の値(式の可能性あり)を尊重せず、単純に固定値へ差し替える。
+  // positron は基本単色で式を使っていないことが多いためこれで十分。
+  map.setPaintProperty(layerId, prop, value);
+}
 
-L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-  attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
-  subdomains: 'abcd',
-  maxZoom: 19
-}).addTo(map);
+// ---- 東京都境界 ------------------------------------------------------------
 
-// ---- データ読み込み --------------------------------------------------------
-
-Promise.all([
-  fetch('lines.geojson').then(function (r) { return r.json(); }),
-  fetch('stations.geojson').then(function (r) { return r.json(); })
-]).then(function (results) {
-  drawLines(results[0]);
-  drawStations(results[1]);
-  document.getElementById('status').classList.add('hidden');
-}).catch(function (err) {
-  document.getElementById('status').textContent =
-    'データを読み込めません。fetch_rail.py を実行して lines.geojson と stations.geojson を同じフォルダに置いてください。';
-  console.error(err);
-});
+function addBoundary(geojson) {
+  map.addSource('boundary', { type: 'geojson', data: geojson });
+  map.addLayer({
+    id: 'boundary',
+    type: 'line',
+    source: 'boundary',
+    layout: { 'line-join': 'round', 'line-cap': 'round' },
+    paint: {
+      'line-color': '#e2554e',        // 落ち着いた赤で境界を強調
+      'line-width': [
+        'interpolate', ['linear'], ['zoom'],
+        8, 1.5, 12, 2.5, 16, 3.5
+      ],
+      'line-opacity': 0.7,
+      'line-dasharray': [3, 2]         // 破線にして路線と区別
+    }
+  });
+}
 
 // ---- 路線 ------------------------------------------------------------------
 
-function drawLines(geojson) {
-  L.geoJSON(geojson, {
-    style: function (feature) {
-      return {
-        color: feature.properties.colour || '#888888',
-        weight: 3.5,
-        opacity: 0.9,
-        lineJoin: 'round',
-        lineCap: 'round'
-      };
+function addLines(geojson) {
+  map.addSource('lines', { type: 'geojson', data: geojson });
+
+  // 路線本体。色は各 feature の colour プロパティを使う。
+  map.addLayer({
+    id: 'lines',
+    type: 'line',
+    source: 'lines',
+    layout: {
+      'line-join': 'round',
+      'line-cap': 'round'
     },
-    interactive: false
-  }).addTo(map);
+    paint: {
+      // ズームに応じて線を太くする(寄るほど太い)。全体的に少し細め。
+      'line-width': [
+        'interpolate', ['linear'], ['zoom'],
+        8, 1,
+        12, 2.2,
+        16, 4.5
+      ],
+      'line-color': ['coalesce', ['get', 'colour'], '#888888'],
+      'line-opacity': 0.9
+    }
+  });
 }
 
 // ---- 駅 --------------------------------------------------------------------
 
-var labelLayer = L.layerGroup().addTo(map);
-var stationData = [];
+function addStations(geojson) {
+  map.addSource('stations', { type: 'geojson', data: geojson });
 
-function drawStations(geojson) {
-  stationData = geojson.features;
+  // 駅の点(白丸 + 枠)。円は GPU で描かれるので大量でも軽い。
+  map.addLayer({
+    id: 'station-dots',
+    type: 'circle',
+    source: 'stations',
+    paint: {
+      'circle-radius': [
+        'interpolate', ['linear'], ['zoom'],
+        9, ['case', ['>=', ['get', 'route_count'], 4], 4, 2],
+        14, ['case', ['>=', ['get', 'route_count'], 4], 7, 5]
+      ],
+      'circle-color': '#ffffff',
+      'circle-stroke-color': [
+        'case', ['>=', ['get', 'route_count'], 4], '#222222', '#4a4a4a'
+      ],
+      'circle-stroke-width': [
+        'case', ['>=', ['get', 'route_count'], 4], 2, 1.5
+      ],
+      // ズームアウト時は乗換の少ない駅の点を薄く/消す
+      'circle-opacity': [
+        'step', ['zoom'],
+        ['case', ['>=', ['get', 'route_count'], 4], 1, 0],  // z<10: 主要駅のみ
+        10, ['case', ['>=', ['get', 'route_count'], 2], 1, 0],
+        12, 1
+      ],
+      'circle-stroke-opacity': [
+        'step', ['zoom'],
+        ['case', ['>=', ['get', 'route_count'], 4], 1, 0],
+        10, ['case', ['>=', ['get', 'route_count'], 2], 1, 0],
+        12, 1
+      ]
+    }
+  });
 
-  // 駅の点。浅いズームでは主要駅だけ、寄ると全駅を出す。
-  var dotLayer = L.layerGroup().addTo(map);
+  // 駅名ラベル。symbol レイヤは MapLibre が自動で衝突回避してくれる。
+  // 白ハローで EkiLupe 風の白背景に近い可読性を出す。
+  map.addLayer({
+    id: 'station-labels',
+    type: 'symbol',
+    source: 'stations',
+    layout: {
+      'text-field': ['get', 'name'],
+      'text-font': ['Noto Sans Regular'],
+      'text-size': [
+        'interpolate', ['linear'], ['zoom'],
+        11, 11,
+        15, 14
+      ],
+      'text-offset': [0, -1.1],
+      'text-anchor': 'bottom',
+      'text-allow-overlap': false,
+      'text-optional': true,
+      // 乗換の多い駅を優先表示(数値が小さいほど優先)
+      'symbol-sort-key': ['-', 0, ['get', 'route_count']]
+    },
+    paint: {
+      'text-color': '#1a1a1a',
+      'text-halo-color': '#ffffff',
+      'text-halo-width': 2,
+      'text-halo-blur': 0.5,
+      // ズームごとに表示する駅を乗換数で絞る
+      'text-opacity': [
+        'step', ['zoom'],
+        0,                                                        // z<11: なし
+        11, ['case', ['>=', ['get', 'route_count'], 4], 1, 0],
+        12, ['case', ['>=', ['get', 'route_count'], 3], 1, 0],
+        13, ['case', ['>=', ['get', 'route_count'], 2], 1, 0],
+        14, 1
+      ]
+    }
+  });
 
-  function renderDots() {
-    dotLayer.clearLayers();
-    var z = map.getZoom();
-    // ズーム10未満では乗換4以上の主要駅だけ点を出す(密集回避)
-    var minRoutesForDot = z < 10 ? 4 : (z < 12 ? 2 : 1);
-    var bounds = map.getBounds();
+  // 駅タップで停車路線をポップアップ表示
+  map.on('click', 'station-dots', function (e) {
+    var f = e.features[0];
+    var routes = f.properties.routes;
 
-    geojson.features.forEach(function (f) {
-      var routeCount = (f.properties.routes || []).length;
-      if (routeCount < minRoutesForDot) return;
+    // MapLibre は配列プロパティを JSON 文字列で返すことがあるので
+    // 文字列なら parse、ダメなら区切りで分解して配列に正規化する。
+    if (typeof routes === 'string') {
+      try {
+        routes = JSON.parse(routes);
+      } catch (err) {
+        routes = routes.replace(/[\[\]"]/g, '').split(/[,、]/);
+      }
+    }
+    if (!Array.isArray(routes)) routes = routes ? [routes] : [];
 
-      var lat = f.geometry.coordinates[1];
-      var lng = f.geometry.coordinates[0];
-      if (!bounds.contains([lat, lng])) return;
+    // 前後空白を除き、重複を除いて並べる
+    var seen = {};
+    routes = routes
+      .map(function (r) { return String(r).trim(); })
+      .filter(function (r) {
+        if (!r || seen[r]) return false;
+        seen[r] = true;
+        return true;
+      });
 
-      var isMajor = routeCount >= 4;
-      var size = isMajor ? 11 : 8;
+    var listHtml = routes.length
+      ? '<ul style="margin:6px 0 0;padding:0;list-style:none;font-size:12px;' +
+        'color:#333;line-height:1.7">' +
+        routes.map(function (r) {
+          var c = lineColours[r] || '#888888';
+          return '<li style="display:flex;align-items:center;gap:6px">' +
+            '<span style="width:11px;height:11px;border-radius:3px;' +
+            'flex:0 0 auto;border:1px solid rgba(0,0,0,.15);' +
+            'background:' + c + '"></span>' +
+            '<span>' + escapeHtml(r) + '</span></li>';
+        }).join('') +
+        '</ul>'
+      : '<div style="font-size:12px;color:#888;margin-top:4px">' +
+        '路線情報なし</div>';
 
-      L.marker([lat, lng], {
-        icon: L.divIcon({
-          className: '',
-          html: '<div class="station-dot' + (isMajor ? ' major' : '') +
-                '" style="width:' + size + 'px;height:' + size + 'px"></div>',
-          iconSize: [size, size],
-          iconAnchor: [size / 2, size / 2]
-        }),
-        interactive: false,
-        keyboard: false
-      }).addTo(dotLayer);
+    var html =
+      '<div style="font-weight:600;font-size:14px">' +
+      escapeHtml(f.properties.name) + '</div>' +
+      '<div style="font-size:11px;color:#888">' +
+      routes.length + ' 路線</div>' +
+      listHtml;
+
+    new maplibregl.Popup({ closeButton: true, offset: 10, maxWidth: '240px' })
+      .setLngLat(e.lngLat)
+      .setHTML(html)
+      .addTo(map);
+  });
+  map.on('mouseenter', 'station-dots', function () {
+    map.getCanvas().style.cursor = 'pointer';
+  });
+  map.on('mouseleave', 'station-dots', function () {
+    map.getCanvas().style.cursor = '';
+  });
+}
+
+// ---- 操作パネル ------------------------------------------------------------
+
+function setupPanel() {
+  var panel = document.getElementById('panel');
+  var head = document.getElementById('panel-head');
+  var toggle = document.getElementById('panel-toggle');
+
+  head.addEventListener('click', function () {
+    panel.classList.toggle('collapsed');
+    toggle.textContent = panel.classList.contains('collapsed') ? '▸' : '▾';
+  });
+
+  // 東京都境界のオン/オフ
+  document.getElementById('toggle-boundary').addEventListener('change', function (e) {
+    if (map.getLayer('boundary')) {
+      map.setLayoutProperty('boundary', 'visibility',
+        e.target.checked ? 'visible' : 'none');
+    }
+  });
+
+  // 道路番号は常に非表示にする
+  setRoadNumbersVisible(false);
+}
+
+// ベースマップの道路番号(国道・高速の番号標識)レイヤを切り替える。
+// レイヤID だけでなく、テキストやアイコンが道路の ref(路線番号)を
+// 参照しているかを調べて判定する。positron の実際のレイヤ名に依存しない。
+var roadNumberLayerIds = null;
+function findRoadNumberLayers() {
+  if (roadNumberLayerIds) return roadNumberLayerIds;
+  roadNumberLayerIds = [];
+  var layers = map.getStyle().layers || [];
+
+  layers.forEach(function (layer) {
+    if (layer.type !== 'symbol') return;
+    var id = (layer.id || '').toLowerCase();
+    var layout = layer.layout || {};
+
+    // 式やレイヤ設定を文字列化して 'ref' や 'shield' を含むか調べる
+    var blob = JSON.stringify([
+      id,
+      layout['text-field'] || '',
+      layout['icon-image'] || '',
+      layer['source-layer'] || ''
+    ]).toLowerCase();
+
+    var looksLikeRoadNumber =
+      blob.indexOf('shield') !== -1 ||
+      blob.indexOf('"ref"') !== -1 ||
+      blob.indexOf('get","ref') !== -1 ||
+      blob.indexOf('junction') !== -1 ||
+      id.indexOf('highway-shield') !== -1 ||
+      id.indexOf('road_ref') !== -1;
+
+    if (looksLikeRoadNumber) roadNumberLayerIds.push(layer.id);
+  });
+
+  return roadNumberLayerIds;
+}
+
+function setRoadNumbersVisible(visible) {
+  findRoadNumberLayers().forEach(function (id) {
+    if (map.getLayer(id)) {
+      map.setLayoutProperty(id, 'visibility', visible ? 'visible' : 'none');
+    }
+  });
+}
+
+// ---- 路線フィルタ ----------------------------------------------------------
+
+var allLineNames = [];
+var lineColours = {};   // 路線名 -> 色。ポップアップ等で参照する。
+
+// 新幹線の列車名。これらは「新幹線」グループにまとめ、初期は非表示。
+var SHINKANSEN = {
+  'あさま': 1, 'かがやき': 1, 'こだま': 1, 'こまち': 1, 'たにがわ': 1,
+  'つばさ': 1, 'とき': 1, 'なすの': 1, 'のぞみ': 1, 'はくたか': 1,
+  'はやて': 1, 'はやぶさ': 1, 'やまびこ': 1, '東北新幹線': 1
+};
+
+// 在来線特急の列車名。既存路線に重なって描かれるため初期は非表示。
+var LIMITED_EXPRESS = {
+  'JR成田エクスプレス': 1, 'あずさ': 1, 'えのしま': 1, 'きぬがわ': 1,
+  'さがみ': 1, 'しおさい': 1, 'ちちぶ': 1, 'はこね': 1,
+  'スーパーはこね': 1, 'ふじさん': 1, '日光': 1, '踊り子': 1, 'ひたち': 1
+};
+
+// 有料ライナー・空港アクセス系統。初期は非表示。
+var LINER = {
+  'S-Train': 1, 'TJライナー': 1, '拝島ライナー': 1,
+  '京成スカイライナー': 1, '京成成田空港アクセス': 1,
+  '京成電鉄シテイライナー': 1,
+  'エアポート成田空港駅': 1, 'エアポート羽田空港第1・第2ターミナル駅': 1
+};
+
+function buildLineFilters(geojson) {
+  // 路線名 -> 色 の一覧を作る(重複排除)
+  var seen = {};
+  geojson.features.forEach(function (f) {
+    var name = f.properties.name;
+    if (!name || seen[name]) return;
+    seen[name] = f.properties.colour || '#888888';
+  });
+  lineColours = seen;
+  allLineNames = Object.keys(seen).sort();
+
+  // グループに振り分け
+  var shinkansen = [];
+  var limitedExpress = [];
+  var liner = [];
+  var regular = [];
+  allLineNames.forEach(function (name) {
+    if (SHINKANSEN[name]) shinkansen.push(name);
+    else if (LIMITED_EXPRESS[name]) limitedExpress.push(name);
+    else if (LINER[name]) liner.push(name);
+    else regular.push(name);
+  });
+
+  var container = document.getElementById('line-filters');
+
+  // 1行分のフィルタ行を作る
+  function makeRow(name, checked) {
+    var row = document.createElement('div');
+    row.className = 'line-filter-row';
+
+    var cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = checked;
+    cb.dataset.line = name;
+    cb.addEventListener('change', applyLineFilter);
+
+    var sw = document.createElement('span');
+    sw.className = 'line-swatch';
+    sw.style.background = seen[name];
+
+    var lbl = document.createElement('label');
+    lbl.textContent = name;
+    lbl.title = name;
+    lbl.addEventListener('click', function () { cb.click(); });
+
+    row.appendChild(cb);
+    row.appendChild(sw);
+    row.appendChild(lbl);
+    return row;
+  }
+
+  // 見出しを作る
+  function makeHeading(text) {
+    var h = document.createElement('div');
+    h.className = 'panel-section-title';
+    h.textContent = text;
+    return h;
+  }
+
+  // 在来線など(初期表示 on)
+  regular.forEach(function (name) {
+    container.appendChild(makeRow(name, true));
+  });
+
+  // 在来線特急(初期表示 off)
+  if (limitedExpress.length) {
+    container.appendChild(makeHeading('在来線特急'));
+    limitedExpress.forEach(function (name) {
+      container.appendChild(makeRow(name, false));
     });
   }
 
-  renderDots();
-  var dotTimer = null;
-  map.on('moveend zoomend', function () {
-    if (dotTimer) clearTimeout(dotTimer);
-    dotTimer = setTimeout(renderDots, 120);
-  });
-
-  renderLabels();
-
-  // moveend / zoomend は連続で飛んでくるので少し待ってからまとめて処理する
-  var labelTimer = null;
-  map.on('moveend zoomend', function () {
-    if (labelTimer) clearTimeout(labelTimer);
-    labelTimer = setTimeout(renderLabels, 120);
-  });
-}
-
-// 表示範囲内の駅について、衝突しないものだけラベルを描く。
-// 乗換数の多い駅から順に配置するので、競合したら主要駅が勝つ。
-function renderLabels() {
-  labelLayer.clearLayers();
-
-  // 浅いズームではラベルを描かず、駅の点だけにする(軽い)
-  var minRoutes = currentMinRoutes();
-  if (minRoutes === null) return;
-
-  var bounds = map.getBounds();
-  var placed = [];   // 配置済みラベルの画面上矩形
-
-  for (var i = 0; i < stationData.length; i++) {
-    var f = stationData[i];
-    var lng = f.geometry.coordinates[0];
-    var lat = f.geometry.coordinates[1];
-
-    if (!bounds.contains([lat, lng])) continue;
-
-    var routeCount = (f.properties.routes || []).length;
-    if (routeCount < minRoutes) continue;
-
-    var name = f.properties.name;
-    var isMajor = routeCount >= 4;
-
-    // 文字数からラベル幅を概算する。全角前提。
-    var charW = isMajor ? 13 : 12;
-    var w = name.length * charW + 14;
-    var h = isMajor ? 22 : 20;
-
-    var pt = map.latLngToContainerPoint([lat, lng]);
-
-    // 駅の点の真上に置く
-    var rect = {
-      left: pt.x - w / 2,
-      top: pt.y - h - 8,
-      right: pt.x + w / 2,
-      bottom: pt.y - 8
-    };
-
-    if (collides(rect, placed)) continue;
-    placed.push(rect);
-
-    L.marker([lat, lng], {
-      icon: L.divIcon({
-        className: '',
-        html: '<div class="station-label' + (isMajor ? ' major' : '') + '">' +
-              escapeHtml(name) + '</div>',
-        iconSize: [w, h],
-        iconAnchor: [w / 2, h + 8]
-      }),
-      interactive: false,
-      keyboard: false
-    }).addTo(labelLayer);
+  // ライナー・空港アクセス(初期表示 off)
+  if (liner.length) {
+    container.appendChild(makeHeading('ライナー・空港アクセス'));
+    liner.forEach(function (name) {
+      container.appendChild(makeRow(name, false));
+    });
   }
+
+  // 新幹線(初期表示 off)
+  if (shinkansen.length) {
+    container.appendChild(makeHeading('新幹線'));
+    shinkansen.forEach(function (name) {
+      container.appendChild(makeRow(name, false));
+    });
+  }
+
+  document.getElementById('lines-all').addEventListener('click', function () {
+    setAllLines(true);
+  });
+  document.getElementById('lines-none').addEventListener('click', function () {
+    setAllLines(false);
+  });
+
+  // 初期状態(新幹線 off)をmap に反映
+  applyLineFilter();
 }
 
-function collides(rect, placed) {
-  for (var i = 0; i < placed.length; i++) {
-    var p = placed[i];
-    if (rect.left - COLLISION_PAD < p.right &&
-        rect.right + COLLISION_PAD > p.left &&
-        rect.top - COLLISION_PAD < p.bottom &&
-        rect.bottom + COLLISION_PAD > p.top) {
-      return true;
+function checkedLineNames() {
+  var names = [];
+  document.querySelectorAll('#line-filters input[type=checkbox]').forEach(
+    function (cb) { if (cb.checked) names.push(cb.dataset.line); }
+  );
+  return names;
+}
+
+function applyLineFilter() {
+  var names = checkedLineNames();
+
+  // 選択された路線名だけを通すフィルタ式
+  var lineExpr = ['in', ['get', 'name'], ['literal', names]];
+  map.setFilter('lines', lineExpr);
+
+  // 駅は「選択路線のいずれかを含む」ものだけ表示。
+  // routes は配列だが、GeoJSON プロパティ上は環境により文字列化されるため
+  // any/index-of の両対応で判定する。
+  var stationExpr = buildStationFilter(names);
+  map.setFilter('station-dots', stationExpr);
+  map.setFilter('station-labels', stationExpr);
+}
+
+function buildStationFilter(names) {
+  if (names.length === allLineNames.length) return null;  // 全選択なら無条件
+  if (names.length === 0) return ['==', ['literal', 1], ['literal', 0]]; // 常に偽
+
+  // routes は正規化路線名の配列。選択路線のいずれかを
+  // 「配列の要素として」含むかを完全一致で判定する(部分一致しない)。
+  var ors = names.map(function (n) {
+    return ['in', n, ['get', 'routes']];
+  });
+  return ['any'].concat(ors);
+}
+
+function isSpecialLine(name) {
+  return !!(SHINKANSEN[name] || LIMITED_EXPRESS[name] || LINER[name]);
+}
+
+// checked=true(全部): 通常路線だけを on にし、新幹線・特急・ライナーは
+//   off のままにする(初期状態と同じ)。
+// checked=false(なし): すべて off。
+function setAllLines(checked) {
+  document.querySelectorAll('#line-filters input[type=checkbox]').forEach(
+    function (cb) {
+      if (checked && isSpecialLine(cb.dataset.line)) {
+        cb.checked = false;   // 特殊グループは全部でも表示しない
+      } else {
+        cb.checked = checked;
+      }
     }
-  }
-  return false;
+  );
+  applyLineFilter();
 }
 
 function escapeHtml(s) {
-  return s.replace(/[&<>"']/g, function (c) {
+  return String(s).replace(/[&<>"']/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;',
              '"': '&quot;', "'": '&#39;' }[c];
   });
 }
 
-// PWA: service worker を登録(https か localhost でのみ動く)
+// PWA
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
     navigator.serviceWorker.register('sw.js').catch(function (e) {
